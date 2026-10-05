@@ -8,8 +8,10 @@ Sākuma dati (storage.SEED): 000001 RECEIVED, 000002 IN_PROGRESS, 000003 ANSWERE
 import logging
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app import storage
+from app.main import app
 
 RECEIVED = "IES-2026-000001"
 IN_PROGRESS = "IES-2026-000002"
@@ -155,3 +157,23 @@ def test_cra_ac8_no_personal_data_in_logs_or_errors(seeded, caplog):
     for value in secrets:
         assert value not in caplog.text
         assert value not in errors
+
+
+def test_cra_review_500_hides_internal_detail(seeded, monkeypatch, caplog):
+    # Atradums app/errors.py: 500 atbildē bija str(exc) ar iekšējo informāciju.
+    leak = "sqlite3 db=:memory: 32000000101"
+
+    def broken(*args, **kwargs):
+        raise RuntimeError(leak)
+
+    monkeypatch.setattr(storage, "update_status", broken)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with caplog.at_level(logging.DEBUG):
+        response = withdraw(client, RECEIVED, {"reason": REASON})
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {"code": "INTERNAL_ERROR", "message": "Internal error"}
+    }
+    assert leak not in caplog.text
