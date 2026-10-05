@@ -3,6 +3,7 @@
 Pēc restarta dati atgriežas sākuma stāvoklī ar trim sintētiskiem iesniegumiem.
 """
 
+import json
 import logging
 import sqlite3
 import threading
@@ -233,17 +234,30 @@ def get(submission_id: str) -> dict | None:
     return {column: row[column] for column in COLUMNS}
 
 
-def update_status(submission_id: str, status: str) -> dict | None:
-    """Maina statusu. Atgriež atjaunoto ierakstu vai None, ja ID nav atrasts."""
+def update_status(
+    submission_id: str, status: str, allowed_from: tuple[str, ...] | None = None
+) -> dict | None:
+    """Maina statusu. Atgriež atjaunoto ierakstu vai None, ja ID nav atrasts.
+
+    Ja `allowed_from` ir norādīts, statusu maina tikai no šiem statusiem. Pārbaude
+    ir tajā pašā UPDATE, lai divi vienlaicīgi pieprasījumi nevarētu abi izdoties.
+    """
+    allowed = json.dumps(list(allowed_from)) if allowed_from is not None else None
     with _lock:
         cursor = _conn.execute(
-            "UPDATE submissions SET status = ? WHERE id = ?", (status, submission_id)
+            """
+            UPDATE submissions SET status = :status
+            WHERE id = :id
+              AND (:allowed IS NULL
+                   OR status IN (SELECT value FROM json_each(:allowed)))
+            """,
+            {"status": status, "id": submission_id, "allowed": allowed},
         )
     if cursor.rowcount == 0:
         return None
-    record = get(submission_id)
-    logger.info("Statuss mainīts: %s", record)
-    return record
+    # Žurnālā tikai ID un statuss. Ierakstā ir personas kods, vārds un teksts.
+    logger.info("Statuss mainīts: %s -> %s", submission_id, status)
+    return get(submission_id)
 
 
 def update_due_date(submission_id: str, due_date: str) -> dict:

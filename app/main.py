@@ -11,7 +11,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import clock, omd_client, storage
-from app.errors import SubmissionNotFound, register_error_handlers
+from app.errors import InvalidState, SubmissionNotFound, register_error_handlers
 from app.models import (
     AuditEntry,
     Error,
@@ -26,6 +26,7 @@ from app.models import (
     SubmissionStatus,
     Topic,
     TopicItem,
+    WithdrawRequest,
 )
 
 VERSION = "0.1.0"
@@ -36,6 +37,8 @@ TOPIC_NAMES = {
     Topic.PARKS: "Parki un skvēri",
     Topic.OTHER: "Cits",
 }
+# CR-A: FORWARDED nav atļauts (pieņēmums, sk. PR piezīmi). Līgums: tikai šie divi.
+WITHDRAWABLE = (SubmissionStatus.RECEIVED.value, SubmissionStatus.IN_PROGRESS.value)
 REPLY_DAYS = 30  # Vienkāršots termiņš: 30 kalendāra dienas
 UI_DIR = Path(__file__).resolve().parent.parent / "ui"
 
@@ -158,6 +161,26 @@ def get_submission_audit(submission_id: str) -> list[AuditEntry]:
     if storage.get(submission_id) is None:
         raise SubmissionNotFound()
     return [AuditEntry(**entry) for entry in storage.list_audit(submission_id)]
+
+
+@app.post(
+    "/submissions/{submission_id}/withdraw",
+    response_model=Submission,
+    responses={400: {"model": Error}, 404: {"model": Error}, 409: {"model": Error}},
+    tags=["Darbības ar iesniegumu"],
+)
+def withdraw_submission(submission_id: str, data: WithdrawRequest) -> Submission:
+    if storage.get(submission_id) is None:
+        raise SubmissionNotFound()
+    record = storage.update_status(
+        submission_id, SubmissionStatus.WITHDRAWN.value, allowed_from=WITHDRAWABLE
+    )
+    if record is None:
+        raise InvalidState()
+    storage.add_audit(submission_id, "WITHDRAW", data.reason)
+    # Žurnālā tikai ID. Iemeslu neraksta: tajā iedzīvotājs var minēt personas datus.
+    logger.info("Iesniegums atsaukts: %s", submission_id)
+    return Submission(**record)
 
 
 app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
